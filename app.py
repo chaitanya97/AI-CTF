@@ -9,6 +9,10 @@ app.secret_key = 'change_this_key_for_prod'
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///ctf_scores.db'
 db = SQLAlchemy(app)
 
+@app.before_first_request
+def initialize_database():
+    db.create_all()
+
 class Scoreboard(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), nullable=False)
@@ -16,8 +20,6 @@ class Scoreboard(db.Model):
     score = db.Column(db.Integer, nullable=False)
     used_hint = db.Column(db.Boolean, default=False)
     timestamp = db.Column(db.DateTime, default=datetime.datetime.utcnow)
-
-db.create_all()
 
 SCORES = {1: 10, 2: 20, 3: 30, 4: 40, 5: 50}
 
