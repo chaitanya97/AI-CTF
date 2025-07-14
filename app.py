@@ -1,4 +1,4 @@
-# prompt_injection_ctf: scoring & leaderboard enabled
+# prompt_injection_ctf: scoring & leaderboard enabled + logout support
 
 from flask import Flask, request, render_template_string, session, redirect, url_for
 from flask_sqlalchemy import SQLAlchemy
@@ -121,7 +121,7 @@ HTML_TEMPLATE = """
         <pre>{{ response }}</pre>
     {% endif %}
 
-    <p><a href="/">← Back to Home</a></p>
+    <p><a href="/">← Back to Home</a> | <a href="/logout">🚪 Logout</a></p>
 </body>
 </html>
 """
@@ -145,7 +145,7 @@ def home():
         <li><a href="/level/4">Level 4 - Token Substitution Attack</a></li>
         <li><a href="/level/5">Level 5 - Meta Reasoning & Jailbreak</a></li>
     </ul>
-    <p><a href="/leaderboard">🏅 View Leaderboard</a></p>
+    <p><a href="/leaderboard">🏅 View Leaderboard</a> | <a href="/logout">🚪 Logout</a></p>
     """
 
 @app.route('/start', methods=['POST'])
@@ -153,6 +153,11 @@ def start():
     session['username'] = request.form['username']
     session['score'] = 0
     session['used_hints'] = {}
+    return redirect('/')
+
+@app.route('/logout')
+def logout():
+    session.clear()
     return redirect('/')
 
 @app.route('/use_hint/<int:level>')
@@ -206,7 +211,7 @@ def leaderboard():
     return f"""
     <h1>🏅 Leaderboard</h1>
     <table border='1' cellpadding='5'>{rows}</table>
-    <p><a href='/'>← Back to Home</a></p>
+    <p><a href='/'>← Back to Home</a> | <a href='/logout'>🚪 Logout</a></p>
     """
 
 if __name__ == '__main__':
