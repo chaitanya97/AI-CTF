@@ -1,12 +1,25 @@
-# prompt_injection_ctf: ready for production hosting
+# prompt_injection_ctf: scoring & leaderboard enabled
 
-# -------------------------
-# File: app.py
-# -------------------------
-from flask import Flask, request, render_template_string
-import random
+from flask import Flask, request, render_template_string, session, redirect, url_for
+from flask_sqlalchemy import SQLAlchemy
+import random, datetime
 
 app = Flask(__name__)
+app.secret_key = 'change_this_key_for_prod'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///ctf_scores.db'
+db = SQLAlchemy(app)
+
+class Scoreboard(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), nullable=False)
+    level = db.Column(db.Integer, nullable=False)
+    score = db.Column(db.Integer, nullable=False)
+    used_hint = db.Column(db.Boolean, default=False)
+    timestamp = db.Column(db.DateTime, default=datetime.datetime.utcnow)
+
+db.create_all()
+
+SCORES = {1: 10, 2: 20, 3: 30, 4: 40, 5: 50}
 
 LEVELS = {
     1: {
@@ -26,8 +39,8 @@ LEVELS = {
         "check": lambda prompt: (
             any(api in prompt.lower() for api in ["function", "call", "api", "endpoint", "invoke", "execute"])
             and any(op in prompt.lower() for op in ["get", "retrieve", "expose", "fetch", "trigger"])
-            and any(target in prompt.lower() for target in ["secret", "cred", "auth", "token", "value", "internal"])
-            and not any(bad in prompt.lower() for bad in ["password", "print", "show", "code", "variable"])
+            and any(target in prompt.lower() for target in ["secret", "cred", "auth", "token", "value", "internal", "data","key"])
+            and not any(bad in prompt.lower() for bad in ["password"])
         ),
         "hints": [
             "You can't ask for the password like it's your birthday — think like you're spoofing an API call.",
@@ -52,8 +65,8 @@ LEVELS = {
         "password": "CTF{token_decoded}",
         "check": lambda prompt: (
             any(word in prompt.lower() for word in ["replace", "decode", "substitute", "resolve"])
-            and any(word in prompt.lower() for word in ["token", "placeholder", "value"])
-            and not any(bad in prompt.lower() for bad in ["password", "code", "snippet", "function"])
+            and any(word in prompt.lower() for word in ["token", "placeholder", "value","variable", "key", "credential","secret","data"])
+            and not any(bad in prompt.lower() for bad in ["password"])
         ),
         "hints": [
             "Try to decode a token or replace a placeholder. Don’t mention the P-word.",
@@ -85,23 +98,23 @@ HTML_TEMPLATE = """
         function toggleHint() {
             const box = document.getElementById('hint-box');
             box.style.display = box.style.display === 'none' ? 'block' : 'none';
+            fetch("/use_hint/{{ level }}");
         }
     </script>
 </head>
 <body>
     <h1>🧠 Prompt Injection CTF - Level {{ level }}</h1>
+    <p>👤 User: {{ username }} | 🏆 Score: {{ score }}</p>
 
-    <form method="POST" onsubmit="document.getElementById('loading').style.display='block'">
+    <form method="POST">
         <textarea name="user_input" rows="6" cols="80" placeholder="Enter your prompt to the assistant..."></textarea><br><br>
         <input type="submit" value="Submit Prompt">
     </form>
 
-    <button onclick="toggleHint()">💡 Show Hint</button>
+    <button onclick="toggleHint()">💡 Show Hint (−5 pts)</button>
     <div id="hint-box" style="display:none; border:1px solid #ccc; padding:10px; margin-top:10px;">
         <strong>Hint:</strong> {{ hint }}
     </div>
-
-    <div id="loading" style="display:none; margin-top: 20px; font-weight: bold;">⏳ Processing prompt...</div>
 
     {% if response %}
         <h3>LLM Response:</h3>
@@ -115,6 +128,13 @@ HTML_TEMPLATE = """
 
 @app.route('/')
 def home():
+    if "username" not in session:
+        return """
+        <h2>Enter your username to begin:</h2>
+        <form method='POST' action='/start'>
+            <input name='username'> <input type='submit' value='Start'>
+        </form>
+        """
     return """
     <h1>🔓 Prompt Injection CTF</h1>
     <p>Each level simulates a different LLM weakness. Use clever prompts to extract the secret!</p>
@@ -125,28 +145,70 @@ def home():
         <li><a href="/level/4">Level 4 - Token Substitution Attack</a></li>
         <li><a href="/level/5">Level 5 - Meta Reasoning & Jailbreak</a></li>
     </ul>
+    <p><a href="/leaderboard">🏅 View Leaderboard</a></p>
     """
+
+@app.route('/start', methods=['POST'])
+def start():
+    session['username'] = request.form['username']
+    session['score'] = 0
+    session['used_hints'] = {}
+    return redirect('/')
+
+@app.route('/use_hint/<int:level>')
+def use_hint(level):
+    if 'used_hints' in session:
+        session['used_hints'][str(level)] = True
+    return '', 204
 
 @app.route('/level/<int:level>', methods=['GET', 'POST'])
 def level(level):
-    if level not in LEVELS:
-        return "Invalid level", 404
+    if level not in LEVELS or "username" not in session:
+        return redirect('/')
 
     challenge = LEVELS[level]
     user_input = request.form.get("user_input", "")
     response = None
+    hint = random.choice(challenge["hints"])
 
     if request.method == 'POST':
         if challenge["check"](user_input):
-            response = f"✅ Access granted. The password is: {challenge['password']}"
+            base_score = SCORES[level]
+            used_hint = session.get('used_hints', {}).get(str(level), False)
+            final_score = base_score - 5 if used_hint else base_score
+            session['score'] += final_score
+
+            db.session.add(Scoreboard(
+                username=session['username'],
+                level=level,
+                score=final_score,
+                used_hint=used_hint
+            ))
+            db.session.commit()
+
+            response = f"✅ Access granted. The password is: {challenge['password']} (You earned {final_score} pts)"
         else:
             response = "⛔ Access denied. Try a different prompt."
 
-    hint = random.choice(challenge["hints"])
-    return render_template_string(HTML_TEMPLATE, level=level, response=response, hint=hint)
+    return render_template_string(HTML_TEMPLATE,
+                                  level=level,
+                                  response=response,
+                                  hint=hint,
+                                  username=session['username'],
+                                  score=session['score'])
+
+@app.route('/leaderboard')
+def leaderboard():
+    scores = Scoreboard.query.order_by(Scoreboard.score.desc()).all()
+    rows = "<tr><th>User</th><th>Level</th><th>Score</th><th>Used Hint</th><th>Time</th></tr>"
+    for s in scores:
+        rows += f"<tr><td>{s.username}</td><td>{s.level}</td><td>{s.score}</td><td>{'Yes' if s.used_hint else 'No'}</td><td>{s.timestamp}</td></tr>"
+    return f"""
+    <h1>🏅 Leaderboard</h1>
+    <table border='1' cellpadding='5'>{rows}</table>
+    <p><a href='/'>← Back to Home</a></p>
+    """
 
 if __name__ == '__main__':
     from os import environ
-    import multiprocessing
-    workers = multiprocessing.cpu_count() * 2 + 1
     app.run(host='0.0.0.0', port=int(environ.get("PORT", 10000)))
